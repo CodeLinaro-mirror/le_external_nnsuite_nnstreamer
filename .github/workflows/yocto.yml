@@ -26,7 +26,7 @@ jobs:
       run: sudo mkdir --mode a=rwx --parents /var/cache/yocto
 
     - name: restore yocto sstate and downloads cache
-      if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
       uses: actions/cache/restore@v4
       with:
         path: |
@@ -34,8 +34,10 @@ jobs:
           /var/cache/yocto/sstate-cache
           /var/cache/yocto/persistent
         key: yocto-cache-yocto-5.0.3
+
     - name: build
-      if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      id: yocto-build
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
       run: |
         echo "::group::apt-get install"
         sudo apt-get update
@@ -76,13 +78,60 @@ jobs:
         cat tmp/work/core2-64-poky-linux/nnstreamer/*/temp/log.do_compile || true
         echo "::endgroup::"
 
+        echo "::group::Copy result"
+        mkdir -p ~/daily_build/logs
+        cp tmp/work/core2-64-poky-linux/nnstreamer/*/temp/log.do_configure ~/daily_build/logs/yocto_configure_log.txt
+        cp tmp/work/core2-64-poky-linux/nnstreamer/*/temp/log.do_compile ~/daily_build/logs/yocto_compile_log.txt
+        cp -r tmp/deploy ~/daily_build/deploy
+        echo "::endgroup::"
         sudo rm -rf tmp/
+
     - name: save yocto cache (main branch only)
       uses: actions/cache/save@v4
-      if: always() && github.ref == 'refs/heads/main'
+      # if: always() && github.ref == 'refs/heads/main'
       with:
         path: |
           /var/cache/yocto/downloads
           /var/cache/yocto/sstate-cache
           /var/cache/yocto/persistent
         key: yocto-cache-yocto-5.0.3
+
+    - name: generate badge
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      run: |
+        pip install pybadges setuptools
+        if [ '${{ steps.yocto-build.outcome }}' == 'success' ]; then
+          python3 -m pybadges --left-text=test --right-text=success --right-color=green > ~/daily_build/yocto_build_result.svg
+        else
+          python3 -m pybadges --left-text=test --right-text=failure --right-color=red > ~/daily_build/yocto_build_result.svg
+        fi
+
+    - name: Release daily build result to release.nnstreamer.com
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      uses: ./.github/actions/s3_upload
+      with:
+        source: ~/daily_build/deploy
+        dest: yocto/
+        s3_id: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+        s3_key: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+        s3_option: --recursive
+
+    - name: Release daily build log to release.nnstreamer.com
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      uses: ./.github/actions/s3_upload
+      with:
+        source: ~/daily_build/logs
+        dest: logs/
+        s3_id: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+        s3_key: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+        s3_option: --recursive
+
+    - name: update daily result badge
+      # if: github.ref == 'refs/heads/main' || env.rebuild == '1'
+      uses: ./.github/actions/gitpush
+      with:
+        source: ~/daily_build/yocto_build_result.svg
+        dest: testresult
+        message: "Update yocto daily build result."
+        taos_account: ${{ secrets.TAOS_ACCOUNT }}
+        taos_account_token: ${{ secrets.TAOS_ACCOUNT_TOKEN }}
